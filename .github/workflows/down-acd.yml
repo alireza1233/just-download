@@ -1,4 +1,4 @@
-name: Download ACD Components
+name: Download, Archive, Split and Push ACD Components
 
 on:
   workflow_dispatch:
@@ -7,78 +7,102 @@ permissions:
   contents: write
 
 jobs:
-  download-acd:
+  build:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download main ACD Windows program
+      # ---- دانلود تمام اجزا ----
+      - name: Download main ACD program
         shell: pwsh
         run: |
-          $url = "https://github.com/soroushamdg/acd/releases/download/0v2.0.1/acd_windows.zip"
-          Invoke-WebRequest -Uri $url -OutFile acd_windows.zip
+          Invoke-WebRequest -Uri "https://github.com/soroushamdg/acd/releases/download/0v2.0.1/acd_windows.zip" -OutFile acd_windows.zip
 
       - name: Download ACD Engine
         shell: pwsh
         run: |
-          $url = "https://github.com/soroushamdg/acd/releases/download/2v1.6/ACD_ENGINE.zip"
-          Invoke-WebRequest -Uri $url -OutFile ACD_ENGINE.zip
+          Invoke-WebRequest -Uri "https://github.com/soroushamdg/acd/releases/download/2v1.6/ACD_ENGINE.zip" -OutFile ACD_ENGINE.zip
 
       - name: Download ACD Database
         shell: pwsh
         run: |
-          $url = "https://github.com/soroushamdg/acd/releases/download/2v1.6/database.acddb"
-          Invoke-WebRequest -Uri $url -OutFile database.acddb
+          Invoke-WebRequest -Uri "https://github.com/soroushamdg/acd/releases/download/2v1.6/database.acddb" -OutFile database.acddb
 
       - name: Download FFmpeg (full build)
         shell: pwsh
         run: |
           $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.7z"
-          $outFile = "ffmpeg-release-full.7z"
-          $maxAttempts = 3
-          $attempt = 1
-          $downloaded = $false
-          while ($attempt -le $maxAttempts -and -not $downloaded) {
+          $out = "ffmpeg-release-full.7z"
+          $attempt = 0
+          do {
+            $attempt++
+            Write-Host "Download attempt $attempt ..."
             try {
-              Write-Host "Attempt $attempt ..."
-              Invoke-WebRequest -Uri $url -OutFile $outFile -ErrorAction Stop
-              $downloaded = $true
+              Invoke-WebRequest -Uri $url -OutFile $out -ErrorAction Stop
+              Write-Host "Download successful"
+              break
             }
             catch {
               Write-Host "Attempt $attempt failed: $_"
-              $attempt++
-              if ($attempt -le $maxAttempts) { Start-Sleep -Seconds 5 }
+              if ($attempt -ge 3) { throw "Failed after 3 attempts" }
+              Start-Sleep -Seconds 5
             }
-          }
-          if (-not $downloaded) { exit 1 }
-
-      - name: Verify downloads
-        shell: pwsh
-        run: |
-          Write-Host "Downloaded files:"
-          Get-ChildItem
+          } while ($true)
 
       - name: Prepare release directory
         shell: pwsh
         run: |
-          mkdir release_package -Force
-          Move-Item -Path acd_windows.zip -Destination release_package/
-          Move-Item -Path ACD_ENGINE.zip -Destination release_package/
-          Move-Item -Path database.acddb -Destination release_package/
-          Move-Item -Path ffmpeg-release-full.7z -Destination release_package/
+          New-Item -ItemType Directory -Force -Path release_package
+          Move-Item -Path acd_windows.zip, ACD_ENGINE.zip, database.acddb, ffmpeg-release-full.7z -Destination release_package/
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: acd_components_package
-          path: release_package/
+      # ---- آرشیو و تقسیم (split) ----
+      - name: Archive and split into 95MB chunks
+        shell: pwsh
+        run: |
+          # 7z را نصب کن (از قبل در runner موجود است)
+          # کل پوشه را یکجا فشرده کن (بدون فشرده‌سازی زیاد برای سرعت)
+          7z a -mx3 -v95m ACD_Full.7z .\release_package\*
+          # فایل‌های اصلی بزرگ را حذف کن
+          Remove-Item -Recurse -Force release_package
+          # پوشه جدید برای قطعات بساز
+          New-Item -ItemType Directory -Force -Path split_parts
+          # قطعات تولید شده (ACD_Full.7z.001, .002, ...) را به split_parts منتقل کن
+          Move-Item -Path ACD_Full.7z.* -Destination split_parts/
 
-      - name: Push to main branch
+      - name: Create combine script for Windows
+        shell: pwsh
+        run: |
+          $combineScript = @'
+          @echo off
+          echo Combining split parts to reconstruct ACD_Full.7z...
+          copy /b ACD_Full.7z.* ACD_Full.7z
+          echo Done. Now you can extract ACD_Full.7z with 7-Zip.
+          pause
+          '@
+          Set-Content -Path split_parts\combine.bat -Value $combineScript -Encoding ASCII
+
+      - name: Verify split parts
+        shell: pwsh
+        run: |
+          Get-ChildItem split_parts
+
+      # ---- انتشار (commit + push) ----
+      - name: Push split parts to main branch
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "actions@github.com"
-          git add release_package/
-          git commit -m "Add precompiled ACD components" || echo "No changes"
+          # حذف فایل‌های قبلی اگر وجود داشتند
+          git rm -r --ignore-unmatch release_package > $null
+          git rm -r --ignore-unmatch split_parts > $null
+          # اضافه کردن پوشه جدید
+          git add split_parts
+          git commit -m "Add ACD complete package split into 95MB chunks (with combine.bat)" || echo "No changes"
           git push origin main
+
+      - name: Upload artifacts (for manual download)
+        uses: actions/upload-artifact@v4
+        with:
+          name: acd_split_parts
+          path: split_parts
