@@ -1,4 +1,5 @@
-name: Download and Split ACD
+# نام فایل: .github/workflows/build-complete-acd.yml
+name: Build Complete Offline ACD Package
 
 on:
   workflow_dispatch:
@@ -7,44 +8,87 @@ permissions:
   contents: write
 
 jobs:
-  download-and-split:
-    runs-on: ubuntu-latest
+  build-complete-package:
+    runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download ACD Windows
+      # 1. دریافت برنامه اصلی
+      - name: Download Main ACD Program
+        shell: pwsh
         run: |
-          echo "⬇️ Downloading ACD from GitHub release..."
-          wget -q --show-progress -O acd_windows.zip \
-            https://github.com/soroushamdg/acd/releases/download/0v2.0.1/acd_windows.zip
+          Invoke-WebRequest -Uri "https://github.com/soroushamdg/acd/releases/download/0v2.0.1/acd_windows.zip" -OutFile acd_windows.zip
+          Expand-Archive -Path acd_windows.zip -DestinationPath ACD_Full_Package -Force
+          Remove-Item acd_windows.zip
 
-      - name: Extract and Split
+      # 2. ایجاد ساختار پوشه‌های مورد نیاز
+      - name: Create Directory Structure
+        shell: pwsh
         run: |
-          echo "📦 Extracting..."
-          mkdir -p acd
-          unzip -q acd_windows.zip -d acd
-          rm acd_windows.zip
-          
-          echo "✂️ Splitting into 95MB chunks..."
-          tar czf - acd | split -b 95m - acd_parts.tar.gz.
-          ls -lh acd_parts.tar.gz.*
-          
-          echo "📝 Creating restore script for your Windows system..."
-          cat > combine.bat << 'EOF'
+          New-Item -ItemType Directory -Path ACD_Full_Package\python_deps -Force
+          New-Item -ItemType Directory -Path ACD_Full_Package\tools -Force
+
+      # 3. دانلود وابستگی‌های پایتون به صورت آفلاین
+      - name: Download Python Dependencies
+        shell: pwsh
+        run: |
+          python -m pip download -d ACD_Full_Package\python_deps selenium untangle
+
+      # 4. افزودن FFmpeg
+      - name: Add FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip" -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_temp -Force
+          $ffmpegDir = Get-ChildItem -Path ffmpeg_temp -Directory | Select-Object -First 1
+          Copy-Item -Path "$($ffmpegDir.FullName)\bin\*" -Destination ACD_Full_Package\tools\ -Recurse
+          Remove-Item ffmpeg.zip
+          Remove-Item ffmpeg_temp -Recurse -Force
+
+      # 5. افزودن Geckodriver
+      - name: Add Geckodriver
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/mozilla/geckodriver/releases/latest/download/geckodriver-v0.36.0-win64.zip" -OutFile geckodriver.zip
+          Expand-Archive -Path geckodriver.zip -DestinationPath ACD_Full_Package\tools\ -Force
+          Remove-Item geckodriver.zip
+
+      # 6. ایجاد فایل راه‌انداز (Launcher)
+      - name: Create Offline Launcher Script
+        shell: pwsh
+        run: |
+          $launcherContent = @'
           @echo off
-          echo This script will combine the split files to restore ACD.
-          echo Make sure to run it in the same folder as the split files.
+          title ACD - Offline Pack
+          echo Setting up offline environment variables...
+          set "PATH=%CD%\tools;%PATH%"
+          set "PYTHONPATH=%CD%\python_deps"
           echo.
-          copy /b acd_parts.tar.gz.* acd_full.tar.gz
-          echo Extraction completed. Run 'tar -xzf acd_full.tar.gz' if you have tar, or extract manually.
-          pause
-          EOF
+          echo Starting ACD application...
+          start acd_windows.exe
+          ' @
+          Set-Content -Path ACD_Full_Package\run_acd_offline.bat -Value $launcherContent -Encoding ASCII
 
+      # 7. بسته‌بندی نهایی
+      - name: Package Everything
+        shell: pwsh
+        run: |
+          Compress-Archive -Path ACD_Full_Package\* -DestinationPath ACD_Complete_Offline_Package.zip -Force
+
+      # 8. آپلود به عنوان Artifact در Action جاری
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ACD_Complete_Offline_Package
+          path: ACD_Complete_Offline_Package.zip
+
+      # 9. (اختیاری) انتشار فایل در مخزن GitHub
       - name: Push to main branch
+        shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add acd_parts.tar.gz.* combine.bat
-          git commit -m "➕ Add ACD split files (95MB chunks)" || echo "⚠️ No changes to commit"
+          git config user.email "actions@github.com"
+          git add ACD_Complete_Offline_Package.zip
+          git commit -m "Add complete offline ACD package" || echo "No changes to commit"
           git push origin main
