@@ -1,0 +1,50 @@
+name: Download and Split ACD
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-split:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download ACD Windows
+        run: |
+          echo "⬇️ Downloading ACD from GitHub release..."
+          wget -q --show-progress -O acd_windows.zip \
+            https://github.com/soroushamdg/acd/releases/download/0v2.0.1/acd_windows.zip
+
+      - name: Extract and Split
+        run: |
+          echo "📦 Extracting..."
+          mkdir -p acd
+          unzip -q acd_windows.zip -d acd
+          rm acd_windows.zip
+          
+          echo "✂️ Splitting into 95MB chunks..."
+          tar czf - acd | split -b 95m - acd_parts.tar.gz.
+          ls -lh acd_parts.tar.gz.*
+          
+          echo "📝 Creating restore script for your Windows system..."
+          cat > combine.bat << 'EOF'
+          @echo off
+          echo This script will combine the split files to restore ACD.
+          echo Make sure to run it in the same folder as the split files.
+          echo.
+          copy /b acd_parts.tar.gz.* acd_full.tar.gz
+          echo Extraction completed. Run 'tar -xzf acd_full.tar.gz' if you have tar, or extract manually.
+          pause
+          EOF
+
+      - name: Push to main branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add acd_parts.tar.gz.* combine.bat
+          git commit -m "➕ Add ACD split files (95MB chunks)" || echo "⚠️ No changes to commit"
+          git push origin main
