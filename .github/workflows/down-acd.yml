@@ -1,94 +1,109 @@
-# نام فایل: .github/workflows/build-complete-acd.yml
-name: Build Complete Offline ACD Package
+# نام فایل: .github/workflows/download-acd.yml
+name: Download ACD Components
 
 on:
   workflow_dispatch:
 
+# Allow writing to repo and creating releases
 permissions:
   contents: write
+  # actions: write  # commented: this is not needed for asset uploads
 
 jobs:
-  build-complete-package:
+  download-acd:
     runs-on: windows-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1. دریافت برنامه اصلی
-      - name: Download Main ACD Program
+      # 1. Download main ACD program (latest, v2.0.1)
+      - name: Download main ACD Windows program
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/soroushamdg/acd/releases/download/0v2.0.1/acd_windows.zip" -OutFile acd_windows.zip
-          Expand-Archive -Path acd_windows.zip -DestinationPath ACD_Full_Package -Force
-          Remove-Item acd_windows.zip
+          $url = "https://github.com/soroushamdg/acd/releases/download/0v2.0.1/acd_windows.zip"
+          $outFile = "acd_windows.zip"
+          Write-Host "Downloading main ACD from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile $outFile
+          Write-Host "Download completed."
 
-      # 2. ایجاد ساختار پوشه‌های مورد نیاز
-      - name: Create Directory Structure
+      # 2. Download engine (ACD_ENGINE.zip)
+      - name: Download ACD Engine
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Path ACD_Full_Package\python_deps -Force
-          New-Item -ItemType Directory -Path ACD_Full_Package\tools -Force
+          $url = "https://github.com/soroushamdg/acd/releases/download/2v1.6/ACD_ENGINE.zip"
+          $outFile = "ACD_ENGINE.zip"
+          Write-Host "Downloading ACD Engine from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile $outFile
+          Write-Host "Download completed."
 
-      # 3. دانلود وابستگی‌های پایتون به صورت آفلاین
-      - name: Download Python Dependencies
+      # 3. Download database.acddb
+      - name: Download ACD Database
         shell: pwsh
         run: |
-          python -m pip download -d ACD_Full_Package\python_deps selenium untangle
+          $url = "https://github.com/soroushamdg/acd/releases/download/2v1.6/database.acddb"
+          $outFile = "database.acddb"
+          Write-Host "Downloading ACD Database from $url ..."
+          Invoke-WebRequest -Uri $url -OutFile $outFile
+          Write-Host "Download completed."
 
-      # 4. افزودن FFmpeg
-      - name: Add FFmpeg
+      # 4. Download FFmpeg (full build, portable) with retry 
+      #    (current filename is ffmpeg-release-full.7z, not .zip)
+      - name: Download FFmpeg (full build)
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip" -OutFile ffmpeg.zip
-          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_temp -Force
-          $ffmpegDir = Get-ChildItem -Path ffmpeg_temp -Directory | Select-Object -First 1
-          Copy-Item -Path "$($ffmpegDir.FullName)\bin\*" -Destination ACD_Full_Package\tools\ -Recurse
-          Remove-Item ffmpeg.zip
-          Remove-Item ffmpeg_temp -Recurse -Force
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.7z"
+          $outFile = "ffmpeg-release-full.7z"
+          $maxAttempts = 3
+          $attempt = 1
+          $downloaded = $false
+          while ($attempt -le $maxAttempts -and -not $downloaded) {
+            try {
+              Write-Host "Download attempt $attempt from $url ..."
+              Invoke-WebRequest -Uri $url -OutFile $outFile -ErrorAction Stop
+              $downloaded = $true
+              Write-Host "FFmpeg downloaded successfully."
+            }
+            catch {
+              Write-Host "Attempt $attempt failed: $_"
+              $attempt++
+              if ($attempt -le $maxAttempts) {
+                Start-Sleep -Seconds 5
+              }
+            }
+          }
+          if (-not $downloaded) {
+            Write-Host "Failed to download FFmpeg after $maxAttempts attempts."
+            exit 1
+          }
 
-      # 5. افزودن Geckodriver
-      - name: Add Geckodriver
+      # ---- Optional: Verify and Set Up Components ----
+      - name: Verify downloads
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://github.com/mozilla/geckodriver/releases/latest/download/geckodriver-v0.36.0-win64.zip" -OutFile geckodriver.zip
-          Expand-Archive -Path geckodriver.zip -DestinationPath ACD_Full_Package\tools\ -Force
-          Remove-Item geckodriver.zip
+          Get-ChildItem -Filter *.zip,*.acddb,*.7z
 
-      # 6. ایجاد فایل راه‌انداز (Launcher)
-      - name: Create Offline Launcher Script
+      # ---- Bundle into a release artifact ----
+      - name: Prepare release directory
         shell: pwsh
         run: |
-          $launcherContent = @'
-          @echo off
-          title ACD - Offline Pack
-          echo Setting up offline environment variables...
-          set "PATH=%CD%\tools;%PATH%"
-          set "PYTHONPATH=%CD%\python_deps"
-          echo.
-          echo Starting ACD application...
-          start acd_windows.exe
-          ' @
-          Set-Content -Path ACD_Full_Package\run_acd_offline.bat -Value $launcherContent -Encoding ASCII
+          mkdir release_package
+          Move-Item -Path acd_windows.zip -Destination release_package/
+          Move-Item -Path ACD_ENGINE.zip -Destination release_package/
+          Move-Item -Path database.acddb -Destination release_package/
+          Move-Item -Path ffmpeg-release-full.7z -Destination release_package/
 
-      # 7. بسته‌بندی نهایی
-      - name: Package Everything
-        shell: pwsh
-        run: |
-          Compress-Archive -Path ACD_Full_Package\* -DestinationPath ACD_Complete_Offline_Package.zip -Force
-
-      # 8. آپلود به عنوان Artifact در Action جاری
-      - name: Upload Artifact
+      - name: Upload artifact (for manual download)
         uses: actions/upload-artifact@v4
         with:
-          name: ACD_Complete_Offline_Package
-          path: ACD_Complete_Offline_Package.zip
+          name: acd_components_package
+          path: release_package/
 
-      # 9. (اختیاری) انتشار فایل در مخزن GitHub
+      # ---- Commit the precompiled assets to main branch ----
       - name: Push to main branch
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "actions@github.com"
-          git add ACD_Complete_Offline_Package.zip
-          git commit -m "Add complete offline ACD package" || echo "No changes to commit"
+          git add release_package/
+          git commit -m "Add precompiled ACD components (engine, database, ffmpeg)"
           git push origin main
