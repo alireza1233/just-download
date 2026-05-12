@@ -1,0 +1,44 @@
+# .github/workflows/download-talkie-from-google-play.yml
+name: 'Talkie Download from Google Play'
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: 🔧 Install gplaydl
+        run: pip install gplaydl
+
+      - name: 🔑 Authenticate with Google Play Store (Anonymous)
+        run: gplaydl auth
+
+      - name: 🎯 Download Talkie APK from Google Play
+        run: gplaydl download com.weaver.app.prod --no-splits
+
+      - name: 📦 Prepare download folder
+        run: |
+          mkdir -p downloads
+          mv *.apk downloads/Talkie.zip || echo "No APK found"
+
+      - name: 🔄 Commit and push to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads/Talkie.zip
+          git diff --cached --quiet || git commit -m "تalking APK را از گوگل پلی دانلود و اضافه کرد"
+          git push
